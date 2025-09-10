@@ -20,7 +20,7 @@ cooldown_time_ms = 2000   # Cooldown after heater OFF (cancelable)
 # -------------------------
 # Button setup (active LOW with pull-up)
 # -------------------------
-BUTTON_PIN = 4
+BUTTON_PIN = 0
 BUTTON_PRESSED_LEVEL = 0  # pressed = LOW
 btn = Pin(BUTTON_PIN, Pin.IN, Pin.PULL_UP)
 
@@ -28,9 +28,10 @@ btn = Pin(BUTTON_PIN, Pin.IN, Pin.PULL_UP)
 # Output pins (ACTIVE-LOW)
 # -------------------------
 # Start OFF = HIGH (1)
-heat       = Pin(0, Pin.OUT, value=1)
-compressor = Pin(1, Pin.OUT, value=1)
-solenoid   = Pin(2, Pin.OUT, value=1)
+heat                 = Pin(1, Pin.OUT, value=1)
+compressor           = Pin(3, Pin.OUT, value=1)
+compressorSolenoid   = Pin(4, Pin.OUT, value=1)
+depressurizeSolenoid = Pin(2, Pin.OUT, value=0)
 
 # -------------------------
 # Helpers
@@ -62,23 +63,42 @@ def disable_compressor():
     else:
         compressor.value(1)
 
-def enable_solenoid():
-    if solenoid.value() != 0:
-        print("Lid Closed Solenoid ENABLED")
-        solenoid.value(0)
+def enable_compressorSolenoid():
+    if compressorSolenoid.value() != 0:
+        print("compressorSolenoid ENABLED")
+        compressorSolenoid.value(0)
 
-def disable_solenoid():
-    if solenoid.value() == 0:
-        print("Lid Closed Solenoid DISABLED")
-        solenoid.value(1)
+def disable_compressorSolenoid():
+    if compressorSolenoid.value() == 0:
+        print("compressorSolenoid DISABLED")
+        compressorSolenoid.value(1)
     else:
-        solenoid.value(1)
+        compressorSolenoid.value(1)
+
+def enable_depressurizeSolenoid():
+    if depressurizeSolenoid.value() != 0:
+        print("Lid Closed depressurizeSolenoid ENABLED")
+        depressurizeSolenoid.value(0)
+
+def disable_depressurizeSolenoid():
+    if depressurizeSolenoid.value() == 0:
+        print("Lid Closed depressurizeSolenoid DISABLED")
+        depressurizeSolenoid.value(1)
+    else:
+        depressurizeSolenoid.value(1)
 
 def safe_state():
     """Turn everything OFF (HIGH for active-low outputs)."""
     disable_heat()
     disable_compressor()
-    disable_solenoid()
+    disable_compressorSolenoid()
+    disable_depressurizeSolenoid()
+    
+def depressurize():
+    safe_state();                  #Disable everything
+    enable_depressurizeSolenoid()  #Start depressurization
+    wait_for_lid_release()         #Wait until the lid fully opens, releasing the button
+    disable_depressurizeSolenoid() #Make sure nothing is actively powered
 
 def wait_with_cancel(duration_ms: int, label: str = "Waiting") -> bool:
     """
@@ -104,28 +124,28 @@ def wait_for_lid_release():
     while is_button_pressed():
         time.sleep_ms(10)
     time.sleep_ms(DEBOUNCE_MS)
-    if is_button_pressed():
-        wait_for_lid_release()
-    else:
-        print("Lid released — ready for next cycle")
+    print("Lid released — ready for next cycle")
 
 def run_cycle():
     """
     Sequence:
-      - Enable solenoid + compressor for vacuum_time_ms (cancelable)
+      - Enable compressorSolenoid + disable depressurizeSolenoid + compressor for vacuum_time_ms (cancelable)
       - Disable compressor, 100 ms block
       - Enable heater for heat_time_ms (cancelable)
       - Disable heater, cooldown for cooldown_time_ms (cancelable)
       - Safe state
     """
     # Vacuum phase
-    enable_solenoid()
+    enable_compressorSolenoid()
+    disable_depressurizeSolenoid()
     enable_compressor()
     if not wait_with_cancel(vacuum_time_ms, "Waiting"):
         return  # canceled -> already safe
 
+
     # Compressor spin-down
     disable_compressor()
+    disable_compressorSolenoid();
     time.sleep_ms(COMPRESSOR_SPINDOWN_MS)
 
     # Heating phase
@@ -137,9 +157,6 @@ def run_cycle():
     disable_heat()
     if not wait_with_cancel(cooldown_time_ms, "Cooling down"):
         return  # canceled -> already safe
-
-    # Finish -> safe state
-    safe_state()
 
 # -------------------------
 # Main loop
@@ -155,11 +172,10 @@ while True:
             print("Lid closed detected — starting cycle")
             run_cycle()
             # After run (success or cancel), ensure safe and wait for release
+            depressurize()
             safe_state()
-            wait_for_lid_release()
         else:
             safe_state()
     else:
         safe_state()
     time.sleep_ms(10)
-
