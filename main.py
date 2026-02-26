@@ -1,7 +1,7 @@
 # Vacuum Sealer Controller – Raspberry Pi Pico (MicroPython)
 # Outputs are ACTIVE-LOW: drive pin LOW to ENABLE, HIGH to DISABLE.
 
-from machine import Pin
+from machine import ADC, Pin
 import time
 
 # -------------------------
@@ -10,11 +10,16 @@ import time
 DEBOUNCE_MS            = 50
 COMPRESSOR_SPINDOWN_MS = 200    # Allowed blocking delay
 
+# ---------------------------------------
+# Potentiometer Setup
+# for controlling vacuum and heat time
+# ---------------------------------------
+vacuum_time_dial = ADC(Pin(26)) #Pin(26, Pin.IN) # Solenoid + Compressor ON duration (GP26 = ADC0)
+heater_time_dial = ADC(Pin(27)) #Pin(27, Pin.IN) # Heating ON duration (GP27 = ADC1)
+
 # -------------------------
 # Adjustable timings (variables, not constants)
 # -------------------------
-vacuum_time_ms   = 4500   # Solenoid + Compressor ON duration (cancelable)
-heat_time_ms     = 2500   # Heating ON duration (cancelable)
 cooldown_time_ms = 2000   # Cooldown after heater OFF (cancelable)
 
 # -------------------------
@@ -126,6 +131,31 @@ def wait_for_lid_release():
     time.sleep_ms(DEBOUNCE_MS)
     print("Lid released — ready for next cycle")
 
+#Read analog pin (potentiometer) to decide how long to run the compressor for
+#Returns time in milliseconds
+def getCompressorTimeMS():
+    compressorTime = 14000 #Max compressor time is 14 seconds
+    compressorPotentiometer = vacuum_time_dial.read_u16() #Returns 0-65535
+    print("POT: ", compressorPotentiometer)
+    
+    #Scaling linearly doesn't work that well.  2x the amount of time doesn't get you
+    #2x the amount of seal.  After the first like 3-4 seconds, we're close to "max seal".
+    #If you want to go beyond that, even by a tiny bit, you need to dramatically increase
+    #compressor time.  Because of this, we'll take this to a power of 1.5
+    normalized = compressorPotentiometer / 65535 #Returns 0.0-1.0
+    multiplier = normalized * normalized #normalized^1.5, increase non-linearly up.  Still 0.0-1.0
+    
+    compressorTime = (compressorTime * multiplier);
+    return compressorTime
+
+#Read analog pin (potentiometer) to decide how long to run the heater for
+#Returns time in milliseconds
+def getHeaterTimeMS():
+    heaterTime = 5000 #Max heater time is 5 seconds
+    heaterPotentiometer = heater_time_dial.read_u16()
+    heaterTime = (heaterTime * heaterPotentiometer) / 65535;
+    return heaterTime
+
 def run_cycle():
     """
     Sequence:
@@ -135,10 +165,15 @@ def run_cycle():
       - Disable heater, cooldown for cooldown_time_ms (cancelable)
       - Safe state
     """
+    
     # Vacuum phase
     enable_compressorSolenoid()
     disable_depressurizeSolenoid()
     enable_compressor()
+    
+    vacuum_time_ms = getCompressorTimeMS();
+    print("Compressor:", vacuum_time_ms, "ms");
+    
     if not wait_with_cancel(vacuum_time_ms, "Waiting"):
         return  # canceled -> already safe
 
@@ -150,7 +185,11 @@ def run_cycle():
 
     # Heating phase
     enable_heat()
-    if not wait_with_cancel(heat_time_ms, "Waiting"):
+    
+    heater_time_ms = getHeaterTimeMS();
+    print("Heater:", heater_time_ms, "ms");
+    
+    if not wait_with_cancel(heater_time_ms, "Waiting"):
         return  # canceled -> already safe
 
     # Cooldown phase (heater OFF, keep solenoid state until cooldown finishes)
